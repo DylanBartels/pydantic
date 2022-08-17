@@ -3065,3 +3065,42 @@ def test_model_with_type_attributes():
         'properties': {'a': {'title': 'A'}, 'b': {'title': 'B'}},
         'required': ['a', 'b'],
     }
+
+def test_conditionals():
+    class SpamEnum(str, Enum):
+        foo = 'f'
+        bar = 'b'
+
+    class Model(BaseModel):
+        foo: str
+        bar: SpamEnum
+
+        @validator("bar")
+        def validate_foo(cls, value, values):
+            if value == SpamEnum.bar and values["foo"] == "foo":
+                raise ValueError()
+            return value
+
+    assert Model.schema(json_conditionals=True) == {
+        'type': 'object',
+        'title': 'Model',
+        'properties': {
+            'foo': {'type': 'string', 'title': 'Foo'},
+            'bar': {'$ref': '#/definitions/SpamEnum'},
+        },
+        'definitions': {
+            'SpamEnum': {'title': 'SpamEnum', 'description': 'An enumeration.', 'type': 'string', 'enum': ['f', 'b']},
+        },
+        "if": {
+            "properties": {
+                "foo": {
+                    "const": "foo"
+                }
+            }
+        },
+        "then": {
+            "definitions": {
+                'SpamEnum': {'title': 'SpamEnum', 'description': 'An enumeration.', 'type': 'string', 'enum': ['f']},
+            }
+        }
+    }
