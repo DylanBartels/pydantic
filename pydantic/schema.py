@@ -111,6 +111,7 @@ def schema(
     description: Optional[str] = None,
     ref_prefix: Optional[str] = None,
     ref_template: str = default_ref_template,
+    json_conditionals: bool = False,
 ) -> Dict[str, Any]:
     """
     Process a list of models and generate a single JSON Schema with all of them defined in the ``definitions``
@@ -147,6 +148,7 @@ def schema(
             model_name_map=model_name_map,
             ref_prefix=ref_prefix,
             ref_template=ref_template,
+            json_conditionals=json_conditionals
         )
         definitions.update(m_definitions)
         model_name = model_name_map[model]
@@ -161,6 +163,7 @@ def model_schema(
     by_alias: bool = True,
     ref_prefix: Optional[str] = None,
     ref_template: str = default_ref_template,
+    json_conditionals: bool = False
 ) -> Dict[str, Any]:
     """
     Generate a JSON Schema for one model. With all the sub-models defined in the ``definitions`` top-level
@@ -183,7 +186,8 @@ def model_schema(
     model_name_map = get_model_name_map(flat_models)
     model_name = model_name_map[model]
     m_schema, m_definitions, nested_models = model_process_schema(
-        model, by_alias=by_alias, model_name_map=model_name_map, ref_prefix=ref_prefix, ref_template=ref_template
+        model, by_alias=by_alias, model_name_map=model_name_map, ref_prefix=ref_prefix, ref_template=ref_template, 
+        json_conditionals=json_conditionals
     )
     if model_name in nested_models:
         # model_name is in Nested models, it has circular references
@@ -555,6 +559,7 @@ def model_process_schema(
     ref_template: str = default_ref_template,
     known_models: TypeModelSet = None,
     field: Optional[ModelField] = None,
+    json_conditionals: bool = False
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Set[str]]:
     """
     Used by ``model_schema()``, you probably should be using that function.
@@ -583,6 +588,7 @@ def model_process_schema(
         ref_prefix=ref_prefix,
         ref_template=ref_template,
         known_models=known_models,
+        json_conditionals=json_conditionals
     )
     s.update(m_schema)
     schema_extra = model.__config__.schema_extra
@@ -604,6 +610,7 @@ def model_type_schema(
     ref_template: str,
     ref_prefix: Optional[str] = None,
     known_models: TypeModelSet,
+    json_conditionals: bool = False
 ) -> Tuple[Dict[str, Any], Dict[str, Any], Set[str]]:
     """
     You probably should be using ``model_schema()``, this function is indirectly used by that function.
@@ -611,10 +618,80 @@ def model_type_schema(
     Take a single ``model`` and generate the schema for its type only, not including additional
     information as title, etc. Also return additional schema definitions, from sub-models.
     """
+    import ast
+    import inspect
+    import textwrap
+
+    class Visitor(ast.NodeVisitor):
+        def __init__(self, f_definitions):
+            self.definitions = f_definitions
+            self.conditionals: Dict[str, Any] = {}
+
+        def visit_If(self, node: ast.If):
+            breakpoint()
+            # Parse the following 'if value == SpamEnum.bar and values["foo"] == "foo":'
+            # Which is the following in ast.dump()
+            # If(
+            #     test=BoolOp(
+            #         op=And(),
+            #         values=[
+            #             Compare(
+            #                 left=Name(id='value', ctx=Load()),
+            #                 ops=[
+            #                     Eq()],
+            #                 comparators=[
+            #                     Attribute(
+            #                         value=Name(id='SpamEnum', ctx=Load()),
+            #                         attr='bar',
+            #                         ctx=Load())]),
+            #             Compare(
+            #                 left=Subscript(
+            #                     value=Name(id='values', ctx=Load()),
+            #                     slice=Constant(value='foo'),
+            #                     ctx=Load()),
+            #                 ops=[
+            #                     Eq()],
+            #                 comparators=[
+            #                     Constant(value='foo')])]),
+            #     body=[
+            #         Raise(
+            #             exc=Call(
+            #                 func=Name(id='ValueError', ctx=Load()),
+            #                 args=[],
+            #                 keywords=[]))],
+            #     orelse=[])
+            if (
+                isinstance(node.test, ast.BoolOp)
+                and isinstance(node.body[0], ast.Raise)
+                and isinstance(node.test.op, ast.And)
+                and isinstance(node.test.values[0].left, ast.Name)
+                and isinstance(node.test.values[0].ops[0], ast.Eq)
+                # and isinstance(node.test.values.compare.comperators, ast.Eq)
+                # enc...
+            ):
+                self.conditionals["if"] = {
+                    "properties": {
+                        node.test.values[1].left.slice.s: {
+                            "const": node.test.values[1].comparators[0].s
+                        }
+                    }
+                }
+                self.conditionals["then"] = {
+                    "definitions": {
+                        'SpamEnum': {
+                            'title': 'SpamEnum', 
+                            'description': 'An enumeration.', 
+                            'type': 'string', 
+                            'enum': ['f']
+                        },
+                    }
+                }
+
     properties = {}
     required = []
     definitions: Dict[str, Any] = {}
     nested_models: Set[str] = set()
+    conditionals = []
     for k, f in model.__fields__.items():
         try:
             f_schema, f_definitions, f_nested_models = field_schema(
@@ -625,6 +702,15 @@ def model_type_schema(
                 ref_template=ref_template,
                 known_models=known_models,
             )
+            if json_conditionals and f.post_validators:
+                # Get the source code of the validator
+                sc = textwrap.dedent(inspect.getsource(f.post_validators[0]))
+                # Create a ast out of it
+                tree = ast.parse(sc)
+                # Traverse the ast with custom visitor
+                visitor = Visitor(f_definitions)
+                visitor.visit(tree)
+                conditionals.append(visitor.conditionals)
         except SkipField as skip:
             warnings.warn(skip.message, UserWarning)
             continue
@@ -647,6 +733,11 @@ def model_type_schema(
             out_schema['required'] = required
     if model.__config__.extra == 'forbid':
         out_schema['additionalProperties'] = False
+    if json_conditionals and visitor.conditionals:
+        if len(conditionals) == 1:
+            out_schema = {**out_schema, **conditionals[0]}
+        else:
+            out_schema["allOf"] = conditionals
     return out_schema, definitions, nested_models
 
 

@@ -3072,8 +3072,8 @@ def test_conditionals():
         bar = 'b'
 
     class Model(BaseModel):
-        foo: str
-        bar: SpamEnum
+        foo: str = Field(None)
+        bar: SpamEnum = Field(None)
 
         @validator("bar")
         def validate_foo(cls, value, values):

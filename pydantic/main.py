@@ -649,11 +649,11 @@ class BaseModel(Representation, metaclass=ModelMetaclass):
         return self._copy_and_set_values(values, fields_set, deep=deep)
 
     @classmethod
-    def schema(cls, by_alias: bool = True, ref_template: str = default_ref_template) -> 'DictStrAny':
+    def schema(cls, by_alias: bool = True, ref_template: str = default_ref_template, json_conditionals: bool = False) -> 'DictStrAny':
         cached = cls.__schema_cache__.get((by_alias, ref_template))
         if cached is not None:
             return cached
-        s = model_schema(cls, by_alias=by_alias, ref_template=ref_template)
+        s = model_schema(cls, by_alias=by_alias, ref_template=ref_template, json_conditionals=json_conditionals)
         cls.__schema_cache__[(by_alias, ref_template)] = s
         return s
 
