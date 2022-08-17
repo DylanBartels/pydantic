@@ -628,7 +628,7 @@ def model_type_schema(
             self.conditionals: Dict[str, Any] = {}
 
         def visit_If(self, node: ast.If):
-            breakpoint()
+            # breakpoint()
             # Parse the following 'if value == SpamEnum.bar and values["foo"] == "foo":'
             # Which is the following in ast.dump()
             # If(
